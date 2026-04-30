@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pappy & Co — Retail Store Dashboard</title>
+<!--
+  =====================================================================
+  PAPPY & CO RETAIL STORE DASHBOARD — STATIC HTML / GITHUB PAGES VERSION
+  =====================================================================
+
+  ONE-TIME SETUP
+  --------------
+  1) SHEET ACCESS
+     Open the source Google Sheet:
+     https://docs.google.com/spreadsheets/d/1m1W8f886MBGp4b1QCR2q1NnmNtWEiCfIy_w9_ZntiDE/edit
+     Click Share → General access → "Anyone with the link" → "Viewer".
+     (Aggregated hourly metrics only — no PII — safe to link-share.)
+
+  2) INVENTORY PLANNER PROXY (Cloudflare Worker)
+     Deploy the included worker.js + wrangler.toml. Steps in worker.js.
+     Once deployed, you'll get a URL like:
+       https://pappy-ip-proxy.YOURACCOUNT.workers.dev
+     Paste that URL into the IP_PROXY_URL constant below.
+
+  3) PUBLISH
+     Push this file as `index.html` to a GitHub repo, enable Pages.
+
+  WEEKLY UPDATE (every Saturday, ~30 seconds)
+  -------------------------------------------
+  After the new weekly tab is added to the Google Sheet, open this file
+  and add the new tab name to the SHEETS array below — exactly as it
+  appears as the tab name. Commit + push. Done.
+
+  NOTES
+  -----
+  - The IP proxy panel is OPTIONAL. If IP_PROXY_URL is empty, the panel
+    just hides itself.
+  - Sheet name lookup uses the gviz `sheet=` parameter, not gid.
+  =====================================================================
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --charcoal: #595955;
+    --gold: #E6B10E;
+    --gold-soft: #f3d160;
+    --cream: #F6EBD8;
+    --cream-deep: #efe0c5;
+    --terracotta: #DF7357;
+    --peach: #FACCAD;
+    --olive: #78754A;
+    --sage: #CABE96;
+    --paper: #FBF6EC;
+    --ink: #3a3a37;
+    --muted: #8b8b85;
+    --good: #4f7a3a;
+    --bad: #b04a3a;
+    --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --display: Impact, "Arial Narrow Bold", Haettenschweiler, sans-serif;
+    --body: "Iowan Old Style", Georgia, "Times New Roman", serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--cream);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 14px;
+    line-height: 1.45;
+    padding: 24px clamp(16px, 4vw, 48px) 40px;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; }
+  a { color: var(--olive); text-decoration: underline; text-underline-offset: 2px; }
+  a:hover { color: var(--terracotta); }
+  button { font-family: inherit; cursor: pointer; }
+
+  header.brand-bar {
+    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+    border-bottom: 2px solid var(--charcoal); padding-bottom: 12px; margin-bottom: 18px; gap: 8px;
+  }
+  .brand-mark { font-family: var(--display); font-size: 26px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--charcoal); }
+  .brand-mark .amp { color: var(--gold); }
+  .brand-sub { font-family: var(--display); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--olive); margin-top: 2px; }
+  .meta-line { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .meta-line button {
+    background: var(--charcoal); color: var(--cream); border: none;
+    padding: 6px 12px; border-radius: 999px;
+    font-family: var(--display); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  .meta-line button:hover { background: var(--gold); color: var(--charcoal); }
+
+  .status { padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 13px; background: var(--paper); border: 1px solid var(--cream-deep); }
+  .status.error { background: #fbe6df; border-color: var(--terracotta); color: var(--bad); }
+  .status.hidden { display: none; }
+
+  nav.weeks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 18px; border-bottom: 1px solid var(--cream-deep); padding-bottom: 8px; }
+  nav.weeks button {
+    background: transparent; border: 1px solid var(--cream-deep); color: var(--charcoal);
+    padding: 8px 16px; border-radius: 4px;
+    font-family: var(--display); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  nav.weeks button.active { background: var(--charcoal); color: var(--cream); border-color: var(--charcoal); }
+  nav.weeks button:hover:not(.active) { border-color: var(--gold); }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .kpi { background: var(--paper); border: 1px solid var(--cream-deep); border-radius: 6px; padding: 16px 18px; }
+  .kpi.headline { background: var(--charcoal); color: var(--cream); border-color: var(--charcoal); }
+  .kpi.warn { border-color: var(--terracotta); }
+  .kpi.warn .label { color: var(--terracotta); }
+  .kpi .label { font-family: var(--display); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  .kpi.headline .label { color: var(--gold); }
+  .kpi .value { font-family: var(--serif); font-size: 28px; font-weight: 600; color: var(--charcoal); line-height: 1.1; }
+  .kpi.headline .value { color: var(--cream); }
+  .kpi .delta { font-size: 12px; margin-top: 6px; color: var(--muted); }
+  .kpi .delta.up { color: var(--good); }
+  .kpi .delta.down { color: var(--bad); }
+
+  h2.section-h {
+    font-family: var(--display); font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--olive); margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px dashed var(--cream-deep);
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  }
+  h2.section-h .live-pill { background: var(--terracotta); color: var(--cream); padding: 2px 8px; border-radius: 999px; font-size: 9px; letter-spacing: 0.16em; font-family: var(--display); }
+  h2.section-h .meta { color: var(--muted); font-family: var(--body); font-size: 11px; letter-spacing: 0; text-transform: none; font-style: italic; }
+
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+  .chart-card { background: var(--paper); border: 1px solid var(--cream-deep); border-radius: 6px; padding: 14px 16px; }
+  .chart-card h3 { margin: 0 0 6px; font-family: var(--display); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--charcoal); }
+  .chart-card .sub { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  .chart-wrap { position: relative; height: 240px; }
+
+  .day-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .day { background: var(--paper); border: 1px solid var(--cream-deep); border-radius: 6px; padding: 16px; position: relative; overflow: hidden; }
+  .day .corner-stamp {
+    position: absolute; top: 12px; right: 12px;
+    font-family: var(--display); font-size: 9px; letter-spacing: 0.16em; color: var(--terracotta);
+    border: 1px solid var(--terracotta); border-radius: 999px; padding: 2px 8px; text-transform: uppercase;
+  }
+  .day h4 { margin: 0 0 6px; font-family: var(--serif); font-size: 20px; color: var(--charcoal); }
+  .day .dow { font-family: var(--display); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .day .row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-bottom: 1px dashed var(--cream-deep); }
+  .day .row:last-of-type { border-bottom: none; }
+  .day .row .k { font-family: var(--display); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .day .row .v { font-weight: 600; color: var(--charcoal); }
+  .day .event-line { margin-top: 8px; font-size: 11px; color: var(--terracotta); font-style: italic; }
+  .best-hour { background: var(--gold); color: var(--charcoal); border-radius: 4px; padding: 6px 8px; font-size: 12px; margin-top: 10px; }
+  .best-hour .lbl { font-family: var(--display); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; margin-right: 6px; opacity: 0.7; }
+
+  .restock-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .restock-summary .kpi .value { font-size: 22px; }
+  .restock-table-wrap { background: var(--paper); border: 1px solid var(--cream-deep); border-radius: 6px; overflow: hidden; }
+  table.restock { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.restock thead th {
+    background: var(--charcoal); color: var(--cream); text-align: left;
+    font-family: var(--display); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+    padding: 10px 12px; font-weight: 400;
+  }
+  table.restock thead th.num { text-align: right; }
+  table.restock tbody td { padding: 10px 12px; border-bottom: 1px dashed var(--cream-deep); vertical-align: middle; }
+  table.restock tbody tr:last-child td { border-bottom: none; }
+  table.restock tbody tr:hover td { background: rgba(230,177,14,0.06); }
+  table.restock td.num { text-align: right; font-family: var(--serif); font-weight: 600; }
+  table.restock td.qty { font-size: 16px; color: var(--charcoal); }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-family: var(--display); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .pill.out { background: var(--terracotta); color: var(--cream); }
+  .pill.low { background: var(--gold); color: var(--charcoal); }
+  .product-cell { display: flex; gap: 10px; align-items: center; }
+  .product-cell img { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; background: var(--cream-deep); border: 1px solid var(--cream-deep); }
+  .product-cell .pt { font-weight: 600; color: var(--charcoal); line-height: 1.2; }
+  .product-cell .vt { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .sku-mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--olive); }
+  .restock-empty { padding: 24px; text-align: center; color: var(--muted); }
+
+  footer.foot { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--cream-deep); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+  .quote { font-style: italic; color: var(--olive); max-width: 70%; }
+  .empty { padding: 48px; text-align: center; background: var(--paper); border: 1px dashed var(--cream-deep); border-radius: 8px; color: var(--muted); }
+  .empty code { background: var(--cream-deep); padding: 2px 6px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="brand-bar">
+  <div>
+    <div class="brand-mark">PAPPY <span class="amp">&amp;</span> CO. RETAIL STORE</div>
+    <div class="brand-sub">Weekly Performance — Louisville, KY</div>
+  </div>
+  <div class="meta-line">
+    <span>Refreshed <span id="refreshed-at">—</span></span>
+    <a href="https://docs.google.com/spreadsheets/d/1m1W8f886MBGp4b1QCR2q1NnmNtWEiCfIy_w9_ZntiDE/edit" target="_blank" rel="noopener">Source sheet ↗</a>
+    <button id="refresh-btn">↻ Refresh</button>
+  </div>
+</header>
+
+<div id="status" class="status">Loading store data…</div>
+
+<nav class="weeks" id="week-tabs"></nav>
+<main id="main"></main>
+
+<section id="restock-section" hidden>
+  <h2 class="section-h">
+    <span>Restock Watch — Retail Store <span class="live-pill">Live</span></span>
+    <span class="meta" id="restock-meta">checking inventory planner…</span>
+  </h2>
+  <div id="restock-summary" class="restock-summary"></div>
+  <div id="restock-body"></div>
+</section>
+
+<footer class="foot">
+  <span class="quote">"We make fine bourbon, at a profit if we can, at a loss if we must, but always fine bourbon." — Pappy Van Winkle, Sr.</span>
+  <span>Sales: WTD Metrics sheet · Inventory: IP via Cloudflare Worker</span>
+</footer>
+
+</div>
+
+<script>
+// =====================================================================
+// CONFIG — Edit these and commit. No code change needed elsewhere.
+// =====================================================================
+const SHEET_ID = "1m1W8f886MBGp4b1QCR2q1NnmNtWEiCfIy_w9_ZntiDE";
+const SHEETS = [
+  "Week of 4/13",
+  "Week of 4/20",
+  // "Week of 4/27",   // ← add new tab name here each Saturday
+];
+const CURRENT_YEAR = 2026; // bump in January
+
+// Inventory Planner proxy (Cloudflare Worker). Leave empty to hide the
+// Restock Watch panel. After deploying worker.js, paste the URL here.
+const IP_PROXY_URL = "https://pappy-ip-proxy.jon-a9f.workers.dev";
+const RETAIL_WAREHOUSE_ID = "c27636_1b705066-e5fe-46b7-933c-0041abe6a817";
+
+// OFFLINE MODE for the sheet (optional): paste each tab's CSV here.
+const EMBEDDED_DATA = null;
+// =====================================================================
+
+const COLORS = {
+  charcoal: "#595955", gold: "#E6B10E", goldSoft: "rgba(230,177,14,0.30)",
+  cream: "#F6EBD8", terracotta: "#DF7357", terracottaSoft: "rgba(223,115,87,0.30)",
+  olive: "#78754A", oliveSoft: "rgba(120,117,74,0.30)",
+};
+const HOURS = ["11A","12P","1P","2P","3P","4P"];
+const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+let chartRegistry = [];
+function destroyCharts() { chartRegistry.forEach(c => { try { c.destroy(); } catch(e){} }); chartRegistry = []; }
+
+function setStatus(msg, kind) {
+  const el = document.getElementById("status");
+  if (!msg) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  el.className = "status " + (kind || "");
+  el.textContent = msg;
+}
+
+// ---- CSV parser (handles quoted fields with commas) ----
+function parseCSV(text) {
+  const rows = []; let row = []; let field = ""; let inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i+1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(field); field = ""; }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ""; }
+      else if (ch === '\r') { /* skip */ }
+      else field += ch;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+async function fetchTab(name) {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(name)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} for "${name}"`);
+  const text = await resp.text();
+  if (text.trim().startsWith("<")) throw new Error(`Tab "${name}" not accessible — make sure the sheet is shared as "Anyone with the link can view".`);
+  return text;
+}
+
+async function fetchAll() {
+  if (EMBEDDED_DATA) return SHEETS.map(name => ({ name, csv: EMBEDDED_DATA[name] || "" }));
+  const out = [];
+  for (const name of SHEETS) {
+    try { const csv = await fetchTab(name); out.push({ name, csv }); }
+    catch (e) { out.push({ name, csv: "", error: e.message }); }
+  }
+  return out;
+}
+
+function num(s) { if (s == null) return 0; const n = parseFloat(String(s).replace(/[$,\s]/g, "")); return Number.isFinite(n) ? n : 0; }
+function pct(s) { if (s == null) return null; const n = parseFloat(String(s).replace(/[%\s]/g, "")); return Number.isFinite(n) ? n : null; }
+
+function parseDaysFromCSV(csvText, weekLabel) {
+  const rows = parseCSV(csvText); const days = []; let cur = null;
+  const headerRe = /^HOUR\s+(\d{1,2})[\.\/](\d{1,2})$/i;
+  for (const r of rows) {
+    if (!r.length) continue;
+    const first = (r[0] || "").trim();
+    const hm = first.match(headerRe);
+    if (hm) {
+      if (cur) days.push(cur);
+      cur = { month: parseInt(hm[1], 10), day: parseInt(hm[2], 10), year: CURRENT_YEAR, weekLabel, hours: [], total: null, event: null, combined: null };
+      continue;
+    }
+    if (!cur) continue;
+    if (!first || /^SALES$/i.test(first)) continue;
+    if (r.length < 6) continue;
+    const [label, sales, traffic, txn, aov, conv] = r.map(c => (c || "").trim());
+    const row = { label, sales: num(sales), traffic: num(traffic), txn: num(txn), aov: num(aov), conv: pct(conv) };
+    if (/^TOTAL$/i.test(label)) cur.total = row;
+    else if (/^EVENT$/i.test(label)) cur.event = row;
+    else if (/^COMBINED$/i.test(label)) cur.combined = row;
+    else if (/^WTD/i.test(label)) {}
+    else if (/^\d{1,2}\s*[AP]$/i.test(label)) cur.hours.push(row);
+  }
+  if (cur) days.push(cur);
+  return days;
+}
+
+function dayDate(d) { return new Date(d.year, d.month - 1, d.day); }
+function fmtDate(d) { const dt = dayDate(d); return (dt.getMonth()+1) + "/" + dt.getDate(); }
+function fmtMoney(n) { return "$" + Math.round(n).toLocaleString("en-US"); }
+function fmtMoney2(n) { return "$" + (n||0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmtPct(n) { if (n == null || !Number.isFinite(n)) return "—"; return (Math.round(n * 10) / 10) + "%"; }
+function fmtNum(n) { return Math.round(n).toLocaleString("en-US"); }
+
+function dayTotals(d) {
+  const hoursSum = d.hours.reduce((a, h) => ({ sales: a.sales + h.sales, traffic: a.traffic + h.traffic, txn: a.txn + h.txn }), { sales: 0, traffic: 0, txn: 0 });
+  const ev = d.event || { sales: 0, traffic: 0, txn: 0 };
+  const combined = { sales: hoursSum.sales + ev.sales, traffic: hoursSum.traffic + ev.traffic, txn: hoursSum.txn + ev.txn };
+  return { store: hoursSum, event: d.event ? ev : null, combined,
+    aov: combined.txn > 0 ? combined.sales / combined.txn : 0,
+    conv: combined.traffic > 0 ? (combined.txn / combined.traffic) * 100 : 0 };
+}
+function computeWeekTotals(days) {
+  let sales = 0, traffic = 0, txn = 0, eventSales = 0, eventTraffic = 0, eventTxn = 0;
+  for (const d of days) {
+    const t = dayTotals(d);
+    sales += t.combined.sales; traffic += t.combined.traffic; txn += t.combined.txn;
+    if (t.event) { eventSales += t.event.sales; eventTraffic += t.event.traffic; eventTxn += t.event.txn; }
+  }
+  return { sales, traffic, txn, aov: txn > 0 ? sales / txn : 0, conv: traffic > 0 ? (txn / traffic) * 100 : 0, eventSales, eventTraffic, eventTxn };
+}
+function aggregateByHour(days) {
+  const map = new Map();
+  for (const h of HOURS) map.set(h, { sales: 0, traffic: 0, txn: 0 });
+  for (const d of days) for (const row of d.hours) {
+    const key = row.label.toUpperCase().replace(/\s+/g,"");
+    if (!map.has(key)) continue;
+    const a = map.get(key); a.sales += row.sales; a.traffic += row.traffic; a.txn += row.txn;
+  }
+  return HOURS.map(h => { const a = map.get(h); return { hour: h, sales: a.sales, traffic: a.traffic, txn: a.txn, conv: a.traffic > 0 ? (a.txn / a.traffic) * 100 : 0 }; });
+}
+
+let STATE = { weeks: [], selectedIdx: 0 };
+
+function deltaPctHTML(curr, prev) {
+  if (prev == null || prev === 0) return '<span class="delta">—</span>';
+  const d = ((curr - prev) / prev) * 100;
+  const arrow = d > 0 ? "▲" : (d < 0 ? "▼" : "·");
+  const cls = d > 0 ? "up" : (d < 0 ? "down" : "");
+  const sign = d > 0 ? "+" : "";
+  return `<span class="delta ${cls}">${arrow} ${sign}${d.toFixed(1)}% vs prior wk</span>`;
+}
+function deltaConvHTML(curr, prev) {
+  if (prev == null || !Number.isFinite(prev)) return '<span class="delta">—</span>';
+  const d = curr - prev;
+  if (Math.abs(d) < 0.05) return '<span class="delta">flat vs prior wk</span>';
+  const arrow = d > 0 ? "▲" : "▼"; const cls = d > 0 ? "up" : "down"; const sign = d > 0 ? "+" : "";
+  return `<span class="delta ${cls}">${arrow} ${sign}${d.toFixed(1)}pp vs prior wk</span>`;
+}
+
+function renderTabs() {
+  const nav = document.getElementById("week-tabs");
+  nav.innerHTML = "";
+  STATE.weeks.forEach((w, i) => {
+    const b = document.createElement("button");
+    b.textContent = w.name;
+    if (i === STATE.selectedIdx) b.classList.add("active");
+    b.addEventListener("click", () => { STATE.selectedIdx = i; renderMain(); renderTabs(); });
+    nav.appendChild(b);
+  });
+}
+
+function renderKPIs(week, prev) {
+  const t = week.totals;
+  const pt = prev ? prev.totals : null;
+  return `
+    <div class="kpi headline"><div class="label">Total Sales</div><div class="value">${fmtMoney(t.sales)}</div>${pt ? deltaPctHTML(t.sales, pt.sales) : '<span class="delta">first measured week</span>'}</div>
+    <div class="kpi"><div class="label">Traffic</div><div class="value">${fmtNum(t.traffic)}</div>${pt ? deltaPctHTML(t.traffic, pt.traffic) : '<span class="delta">—</span>'}</div>
+    <div class="kpi"><div class="label">Transactions</div><div class="value">${fmtNum(t.txn)}</div>${pt ? deltaPctHTML(t.txn, pt.txn) : '<span class="delta">—</span>'}</div>
+    <div class="kpi"><div class="label">AOV</div><div class="value">${fmtMoney2(t.aov)}</div>${pt ? deltaPctHTML(t.aov, pt.aov) : '<span class="delta">—</span>'}</div>
+    <div class="kpi"><div class="label">Conversion</div><div class="value">${fmtPct(t.conv)}</div>${pt ? deltaConvHTML(t.conv, pt.conv) : '<span class="delta">—</span>'}</div>
+  `;
+}
+
+function bestHour(d) { if (!d.hours.length) return null; let best = null; for (const h of d.hours) if (!best || h.sales > best.sales) best = h; return best; }
+
+function renderDayCards(week) {
+  return week.days.map(d => {
+    const t = dayTotals(d);
+    const date = dayDate(d);
+    const dow = DOW[date.getDay()];
+    const bh = bestHour(d);
+    const bhConv = bh ? (bh.conv != null ? bh.conv : (bh.traffic ? (bh.txn / bh.traffic) * 100 : 0)) : 0;
+    return `
+      <div class="day">
+        ${d.event ? '<div class="corner-stamp">Event Day</div>' : ''}
+        <div class="dow">${dow}</div>
+        <h4>${(date.getMonth()+1) + "/" + date.getDate()}</h4>
+        <div class="row"><span class="k">Sales</span><span class="v">${fmtMoney2(t.combined.sales)}</span></div>
+        <div class="row"><span class="k">Traffic</span><span class="v">${fmtNum(t.combined.traffic)}</span></div>
+        <div class="row"><span class="k">Transactions</span><span class="v">${fmtNum(t.combined.txn)}</span></div>
+        <div class="row"><span class="k">AOV</span><span class="v">${fmtMoney2(t.aov)}</span></div>
+        <div class="row"><span class="k">Conversion</span><span class="v">${fmtPct(t.conv)}</span></div>
+        ${d.event ? `<div class="event-line">In-store event added ${fmtMoney(t.event.sales)} on ${fmtNum(t.event.traffic)} attendees (${fmtNum(t.event.txn)} txns)</div>` : ''}
+        ${bh ? `<div class="best-hour"><span class="lbl">Top Hour</span>${bh.label} · ${fmtMoney(bh.sales)} · ${fmtNum(bh.traffic)} traffic · ${fmtPct(bhConv)} conv</div>` : ''}
+      </div>
+    `;
+  }).join("");
+}
+
+function renderMain() {
+  destroyCharts();
+  const main = document.getElementById("main");
+  if (!STATE.weeks.length) {
+    main.innerHTML = `<div class="empty">No weekly tabs found. Edit <code>SHEETS</code> at the top of this file and add a tab name, then make sure the Google Sheet is shared as "Anyone with the link can view."</div>`;
+    return;
+  }
+  const week = STATE.weeks[STATE.selectedIdx];
+  const prev = STATE.selectedIdx > 0 ? STATE.weeks[STATE.selectedIdx - 1] : null;
+  const hourAgg = aggregateByHour(week.days);
+  const eventNote = week.totals.eventSales > 0 ? ` · includes ${fmtMoney(week.totals.eventSales)} from in-store events` : "";
+
+  main.innerHTML = `
+    <h2 class="section-h"><span>${week.name} · At a Glance${eventNote}</span></h2>
+    <section class="kpis">${renderKPIs(week, prev)}</section>
+
+    <h2 class="section-h"><span>Hour-of-Day Patterns</span></h2>
+    <section class="charts">
+      <div class="chart-card"><h3>Sales by Day</h3><div class="sub">Combined store + event activity</div><div class="chart-wrap"><canvas id="ch-sales-day"></canvas></div></div>
+      <div class="chart-card"><h3>Sales by Hour</h3><div class="sub">Summed across the week (store hours only)</div><div class="chart-wrap"><canvas id="ch-sales-hour"></canvas></div></div>
+      <div class="chart-card"><h3>Traffic by Hour</h3><div class="sub">When people walk in</div><div class="chart-wrap"><canvas id="ch-traffic-hour"></canvas></div></div>
+      <div class="chart-card"><h3>Conversion by Hour</h3><div class="sub">Transactions ÷ traffic, weekly</div><div class="chart-wrap"><canvas id="ch-conv-hour"></canvas></div></div>
+    </section>
+
+    <h2 class="section-h"><span>Day-by-Day</span></h2>
+    <section class="day-cards">${renderDayCards(week)}</section>
+
+    ${STATE.weeks.length > 1 ? `
+      <h2 class="section-h"><span>Week-over-Week Trend</span></h2>
+      <section class="charts">
+        <div class="chart-card"><h3>Sales by Week</h3><div class="chart-wrap"><canvas id="ch-trend-sales"></canvas></div></div>
+        <div class="chart-card"><h3>Conversion by Week</h3><div class="chart-wrap"><canvas id="ch-trend-conv"></canvas></div></div>
+      </section>
+    ` : ""}
+  `;
+  drawCharts(week, hourAgg);
+}
+
+function drawCharts(week, hourAgg) {
+  Chart.defaults.font.family = '"Iowan Old Style", Georgia, serif';
+  Chart.defaults.color = COLORS.charcoal;
+  Chart.defaults.borderColor = "rgba(89,89,85,0.12)";
+
+  const daySalesData = week.days.map(d => {
+    const t = dayTotals(d);
+    return { x: fmtDate(d) + " " + DOW[dayDate(d).getDay()], store: t.store.sales, event: t.event ? t.event.sales : 0 };
+  });
+  chartRegistry.push(new Chart(document.getElementById("ch-sales-day"), {
+    type: "bar",
+    data: { labels: daySalesData.map(d => d.x),
+      datasets: [
+        { label: "Store", data: daySalesData.map(d => d.store), backgroundColor: COLORS.gold, borderColor: COLORS.gold, borderWidth: 1, stack: "s" },
+        { label: "Event", data: daySalesData.map(d => d.event), backgroundColor: COLORS.terracotta, borderColor: COLORS.terracotta, borderWidth: 1, stack: "s" },
+      ] },
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 } } } },
+      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, beginAtZero: true, ticks: { callback: v => "$" + v } } } },
+  }));
+  chartRegistry.push(new Chart(document.getElementById("ch-sales-hour"), {
+    type: "bar",
+    data: { labels: hourAgg.map(h => h.hour), datasets: [{ label: "Sales", data: hourAgg.map(h => h.sales), backgroundColor: COLORS.gold, borderColor: COLORS.gold, borderWidth: 1 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { callback: v => "$" + v } } } },
+  }));
+  chartRegistry.push(new Chart(document.getElementById("ch-traffic-hour"), {
+    type: "bar",
+    data: { labels: hourAgg.map(h => h.hour), datasets: [{ label: "Traffic", data: hourAgg.map(h => h.traffic), backgroundColor: COLORS.olive, borderColor: COLORS.olive, borderWidth: 1 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
+  }));
+  chartRegistry.push(new Chart(document.getElementById("ch-conv-hour"), {
+    type: "line",
+    data: { labels: hourAgg.map(h => h.hour),
+      datasets: [{ label: "Conversion %", data: hourAgg.map(h => h.conv), backgroundColor: COLORS.terracottaSoft, borderColor: COLORS.terracotta, pointBackgroundColor: COLORS.terracotta, borderWidth: 2, tension: 0.25, fill: true }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { callback: v => v + "%" } } } },
+  }));
+  if (STATE.weeks.length > 1) {
+    const labels = STATE.weeks.map(w => w.name);
+    chartRegistry.push(new Chart(document.getElementById("ch-trend-sales"), {
+      type: "line",
+      data: { labels, datasets: [{ label: "Total Sales", data: STATE.weeks.map(w => w.totals.sales), backgroundColor: COLORS.goldSoft, borderColor: COLORS.gold, pointBackgroundColor: COLORS.gold, borderWidth: 2, tension: 0.25, fill: true }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { callback: v => "$" + v } } } },
+    }));
+    chartRegistry.push(new Chart(document.getElementById("ch-trend-conv"), {
+      type: "line",
+      data: { labels, datasets: [{ label: "Conversion %", data: STATE.weeks.map(w => w.totals.conv), backgroundColor: COLORS.oliveSoft, borderColor: COLORS.olive, pointBackgroundColor: COLORS.olive, borderWidth: 2, tension: 0.25, fill: true }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { callback: v => v + "%" } } } },
+    }));
+  }
+}
+
+// =====================================================================
+// Inventory Planner (Restock Watch) — via Cloudflare Worker proxy
+// =====================================================================
+function escapeHTML(s) { return String(s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+
+async function fetchRestock() {
+  if (!IP_PROXY_URL) return null; // panel hidden
+  const all = [];
+  let offset = 0;
+  const pageSize = 100;
+  for (let p = 0; p < 20; p++) {
+    const params = new URLSearchParams();
+    params.set("warehouse", RETAIL_WAREHOUSE_ID);
+    params.set("replenishment[gt]", "0");
+    params.set("limit", String(pageSize));
+    params.set("offset", String(offset));
+    params.set("fields", "id,sku,title,product_title,image,vendor,published,removed,inventory_management,hide_in_replenishment,warehouse");
+    const url = IP_PROXY_URL.replace(/\/$/, "") + "/variants?" + params.toString();
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Proxy ${resp.status}: ${text.slice(0, 200)}`);
+    }
+    const data = await resp.json();
+    if (!data || !Array.isArray(data.variants) || data.variants.length === 0) break;
+    all.push(...data.variants);
+    if (data.variants.length < pageSize) break;
+    offset += pageSize;
+  }
+  const filtered = all.filter(v =>
+    v.published === true && v.removed !== true &&
+    v.inventory_management === true && v.hide_in_replenishment !== true
+  );
+  return filtered.map(v => {
+    const wh = (v.warehouse || []).find(w => w.warehouse === RETAIL_WAREHOUSE_ID) || {};
+    return {
+      id: v.id, sku: v.sku || "",
+      title: v.title || v.product_title || "(untitled)",
+      productTitle: v.product_title || "",
+      image: v.image || "", vendor: v.vendor || "",
+      inStock: Number(wh.in_stock) || 0,
+      replenishment: Number(wh.replenishment) || 0,
+      coverDays: Number(wh.forecast_stock_cover_day) || 0,
+    };
+  });
+}
+
+function renderRestock(items, error) {
+  const section = document.getElementById("restock-section");
+  if (!IP_PROXY_URL) { section.hidden = true; return; }
+  section.hidden = false;
+  const meta = document.getElementById("restock-meta");
+  const summary = document.getElementById("restock-summary");
+  const body = document.getElementById("restock-body");
+
+  if (error) {
+    meta.textContent = "error";
+    summary.innerHTML = "";
+    body.innerHTML = `<div class="restock-table-wrap"><div class="restock-empty">Couldn't load Inventory Planner: ${escapeHTML(error)}</div></div>`;
+    return;
+  }
+  if (!items) { section.hidden = true; return; }
+
+  const out = [], low = [];
+  for (const i of items) {
+    if (i.inStock <= 0) out.push(i);
+    else if (i.coverDays > 0 && i.coverDays < 14) low.push(i);
+  }
+  out.sort((a,b) => b.replenishment - a.replenishment || a.title.localeCompare(b.title));
+  low.sort((a,b) => a.coverDays - b.coverDays);
+  const display = [...out, ...low];
+  const totalUnits = display.reduce((s,i) => s + i.replenishment, 0);
+
+  meta.textContent = `${items.length} active SKUs flagged · refreshed just now`;
+
+  summary.innerHTML = `
+    <div class="kpi warn"><div class="label">Sold Out Now</div><div class="value">${out.length}</div></div>
+    <div class="kpi"><div class="label">Stocking Out &lt; 14d</div><div class="value">${low.length}</div></div>
+    <div class="kpi"><div class="label">Units to Reorder</div><div class="value">${fmtNum(totalUnits)}</div></div>
+    <div class="kpi headline"><div class="label">Filter</div><div class="value" style="font-size:14px;line-height:1.3;">Active &amp; replenishable<br>at retail location</div></div>
+  `;
+
+  if (!display.length) {
+    body.innerHTML = `<div class="restock-table-wrap"><div class="restock-empty">No retail SKUs are out of stock or stocking out within 14 days.</div></div>`;
+    return;
+  }
+
+  const rows = display.map(i => {
+    const status = i.inStock <= 0 ? `<span class="pill out">Out</span>` : `<span class="pill low">Low · ${Math.round(i.coverDays)}d</span>`;
+    const img = i.image ? `<img src="${escapeHTML(i.image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<div style="width:40px;height:40px;border-radius:4px;background:var(--cream-deep);"></div>`;
+    const cover = i.inStock <= 0 ? "—" : `${Math.round(i.coverDays)}d`;
+    const sub = i.productTitle && i.productTitle !== i.title
+      ? `<div class="vt">${escapeHTML(i.productTitle)}${i.vendor ? " · " + escapeHTML(i.vendor) : ""}</div>`
+      : (i.vendor ? `<div class="vt">${escapeHTML(i.vendor)}</div>` : "");
+    return `
+      <tr>
+        <td>${status}</td>
+        <td><div class="product-cell">${img}<div><div class="pt">${escapeHTML(i.title)}</div>${sub}</div></div></td>
+        <td><span class="sku-mono">${escapeHTML(i.sku)}</span></td>
+        <td class="num">${fmtNum(i.inStock)}</td>
+        <td class="num">${cover}</td>
+        <td class="num qty">${fmtNum(i.replenishment)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  body.innerHTML = `
+    <div class="restock-table-wrap">
+      <table class="restock">
+        <thead>
+          <tr><th>Status</th><th>Product</th><th>SKU</th><th class="num">In Stock</th><th class="num">Cover</th><th class="num">Reorder Qty</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ---- Orchestration ----
+async function loadSheet() {
+  setStatus("Loading store data…");
+  try {
+    const tabs = await fetchAll();
+    const weeks = []; const errors = [];
+    for (const t of tabs) {
+      if (t.error) errors.push(`${t.name}: ${t.error}`);
+      if (!t.csv) continue;
+      const days = parseDaysFromCSV(t.csv, t.name);
+      if (!days.length) continue;
+      days.sort((a,b) => dayDate(a) - dayDate(b));
+      weeks.push({ name: t.name, days, totals: computeWeekTotals(days) });
+    }
+    STATE.weeks = weeks;
+    STATE.selectedIdx = Math.max(0, weeks.length - 1);
+    document.getElementById("refreshed-at").textContent = new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    if (!weeks.length && errors.length) setStatus("Couldn't load any tabs. " + errors.join(" · "), "error");
+    else if (errors.length) setStatus("Loaded with warnings: " + errors.join(" · "), "error");
+    else setStatus("");
+    renderTabs(); renderMain();
+  } catch (e) {
+    setStatus("Couldn't load sheet: " + (e && e.message ? e.message : String(e)), "error");
+    console.error(e);
+  }
+}
+
+async function loadRestockPanel() {
+  if (!IP_PROXY_URL) { document.getElementById("restock-section").hidden = true; return; }
+  try {
+    const items = await fetchRestock();
+    renderRestock(items, null);
+  } catch (e) {
+    console.error(e);
+    renderRestock([], (e && e.message) ? e.message : String(e));
+  }
+}
+
+async function loadAll() { await Promise.all([loadSheet(), loadRestockPanel()]); }
+
+document.getElementById("refresh-btn").addEventListener("click", loadAll);
+loadAll();
+</script>
+</body>
+</html>
