@@ -533,7 +533,7 @@ async function fetchRestock() {
     params.set("replenishment[gt]", "0");
     params.set("limit", String(pageSize));
     params.set("offset", String(offset));
-    params.set("fields", "id,sku,title,product_title,image,vendor,published,removed,inventory_management,hide_in_replenishment,warehouse");
+    params.set("fields", "id,sku,title,product_title,image,vendor,published,removed,inventory_management,hide_in_replenishment,warehouse,in_stock,replenishment,forecast_stock_cover_day");
     const url = IP_PROXY_URL.replace(/\/$/, "") + "/variants?" + params.toString();
     const resp = await fetch(url);
     if (!resp.ok) {
